@@ -3,34 +3,30 @@
 #include <list>
 #include <stack>
 #include <algorithm>
-#include <chrono>
 
 using namespace std;
-using namespace chrono;
 
-// DFS functions for list implementation
-void dfs1_list(int v, const vector<list<int>>& adj, vector<bool>& visited, stack<int>& finishStack) {
+void dfs1(int v, const vector<list<int>>& adj, vector<bool>& visited, stack<int>& finishStack) {
     visited[v] = true;
     for (int u : adj[v]) {
         if (!visited[u]) {
-            dfs1_list(u, adj, visited, finishStack);
+            dfs1(u, adj, visited, finishStack);
         }
     }
     finishStack.push(v);
 }
 
-void dfs2_list(int v, const vector<list<int>>& revAdj, vector<bool>& visited, vector<int>& component) {
+void dfs2(int v, const vector<list<int>>& revAdj, vector<bool>& visited, vector<int>& component) {
     visited[v] = true;
     component.push_back(v);
     for (int u : revAdj[v]) {
         if (!visited[u]) {
-            dfs2_list(u, revAdj, visited, component);
+            dfs2(u, revAdj, visited, component);
         }
     }
 }
 
-// Kosaraju's algorithm for list implementation
-vector<vector<int>> kosaraju_list(int n, const vector<pair<int, int>>& edges) {
+vector<vector<int>> kosaraju(int n, const vector<pair<int, int>>& edges) {
     vector<list<int>> adj(n + 1), revAdj(n + 1);
     for (const auto& edge : edges) {
         adj[edge.first].push_back(edge.second);
@@ -42,7 +38,7 @@ vector<vector<int>> kosaraju_list(int n, const vector<pair<int, int>>& edges) {
     
     for (int i = 1; i <= n; ++i) {
         if (!visited[i]) {
-            dfs1_list(i, adj, visited, finishStack);
+            dfs1(i, adj, visited, finishStack);
         }
     }
 
@@ -55,7 +51,7 @@ vector<vector<int>> kosaraju_list(int n, const vector<pair<int, int>>& edges) {
 
         if (!visited[v]) {
             vector<int> component;
-            dfs2_list(v, revAdj, visited, component);
+            dfs2(v, revAdj, visited, component);
             sccs.push_back(component);
         }
     }
@@ -63,25 +59,39 @@ vector<vector<int>> kosaraju_list(int n, const vector<pair<int, int>>& edges) {
     return sccs;
 }
 
-// Function to read input, execute Kosaraju's algorithm, and output the SCCs
 int main() {
-    int n, m;
-    cin >> n >> m;
+    string command;
+    int n = 0, m = 0;
+    vector<pair<int, int>> edges;
 
-    vector<pair<int, int>> edges(m);
-    for (int i = 0; i < m; ++i) {
-        int u, v;
-        cin >> u >> v;
-        edges[i] = {u, v};
-    }
-
-    vector<vector<int>> sccs = kosaraju_list(n, edges);
-
-    for (const auto& scc : sccs) {
-        for (int v : scc) {
-            cout << v << " ";
+    while (cin >> command) {
+        if (command == "Newgraph") {
+            cin >> n >> m;
+            edges.clear();
+        } else if (command == "Kosaraju") {
+            vector<vector<int>> sccs = kosaraju(n, edges);
+            cout << "scc:\n";
+            for (const auto& scc : sccs) {
+                for (int v : scc) {
+                    cout << v << " ";
+                }
+                cout << endl;
+            }
+        } else if (command == "Newedge") {
+            int u, v;
+            cin >> u >> v;
+            edges.emplace_back(u, v);
+        } else if (command == "Removeedge") {
+            int u, v;
+            cin >> u >> v;
+            auto it = find(edges.begin(), edges.end(), make_pair(u, v));
+            if (it != edges.end()) {
+                edges.erase(it);
+            }
+        } else {
+            // Invalid command, skip line
+            getline(cin, command);
         }
-        cout << endl;
     }
 
     return 0;
