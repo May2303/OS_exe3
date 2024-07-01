@@ -67,7 +67,19 @@ int main() {
     while (cin >> command) {
         if (command == "Newgraph") {
             cin >> n >> m;
+
+            // Clear the vector
             edges.clear();
+
+            // Resize the vector to a new size (let's say newSize)
+            edges.resize(m);
+    
+            for (int i = 0; i < m; ++i) {
+                int u, v;
+                cin >> u >> v;
+                edges[i] = {u, v};
+            }
+           
         } else if (command == "Kosaraju") {
             vector<vector<int>> sccs = kosaraju(n, edges);
             cout << "scc:\n";
