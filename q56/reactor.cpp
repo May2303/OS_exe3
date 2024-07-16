@@ -1,68 +1,91 @@
 #include "reactor.hpp"
-#include <poll.h>
-#include <thread>
+#include <iostream>
 #include <unistd.h>
-#include <algorithm>
 
-// Constructor
-Reactor::Reactor() : running(false) {}
-
-// Start Reactor
-Reactor* Reactor::startReactor() {
-    Reactor* reactor = new Reactor();
-    reactor->running = true;
-    std::thread reactorThread(&Reactor::reactorLoop, reactor);
-    reactorThread.detach();
-    return reactor;
+// Constructor implementation
+Reactor::Reactor() : max_fd(-1), running(false) {
+    FD_ZERO(&read_fds);
 }
 
-// Add FD to Reactor
-int Reactor::addFdToReactor(int fd, reactorFunc func) {
+// Starts the reactor
+void* Reactor::start() {
+    running = true;
+    return this;
+}
+
+// Adds fd to the reactor
+int Reactor::addFd(int fd, reactorFunc func) {
     std::lock_guard<std::mutex> lock(mtx);
-    fdMap[fd] = func;
-    pollfds.push_back({fd, POLLIN, 0});
+    if (fd < 0) return -1;
+    FD_SET(fd, &read_fds);
+    fd_map[fd] = func;
+    if (fd > max_fd) max_fd = fd;
     return 0;
 }
 
-// Remove FD from Reactor
-int Reactor::removeFdFromReactor(int fd) {
+// Removes fd from the reactor
+int Reactor::removeFd(int fd) {
     std::lock_guard<std::mutex> lock(mtx);
-    fdMap.erase(fd);
-    pollfds.erase(std::remove_if(pollfds.begin(), pollfds.end(),
-                                 [fd](const struct pollfd& pfd) { return pfd.fd == fd; }),
-                  pollfds.end());
+    if (fd_map.find(fd) == fd_map.end()) return -1;
+    FD_CLR(fd, &read_fds);
+    fd_map.erase(fd);
+    if (fd == max_fd) {
+        max_fd = -1;
+        for (const auto& pair : fd_map) {
+            if (pair.first > max_fd) max_fd = pair.first;
+        }
+    }
     return 0;
 }
 
-// Stop Reactor
-int Reactor::stopReactor() {
+// Stops the reactor
+int Reactor::stop() {
+    std::lock_guard<std::mutex> lock(mtx);
     running = false;
     return 0;
 }
 
-// Reactor Loop
-void Reactor::reactorLoop() {
+// Runs the reactor
+void Reactor::run() {
     while (running) {
-        std::vector<struct pollfd> pollfdsCopy;
+        fd_set temp_fds;
         {
             std::lock_guard<std::mutex> lock(mtx);
-            pollfdsCopy = pollfds;
+            temp_fds = read_fds;
         }
-        int ret = poll(pollfdsCopy.data(), pollfdsCopy.size(), 1000);
-        if (ret < 0) {
-            perror("poll");
+        int activity = select(max_fd + 1, &temp_fds, nullptr, nullptr, nullptr);
+
+        if (activity < 0) {
+            perror("select error");
             break;
         }
-        if (ret == 0) continue;
-        for (const auto& pfd : pollfdsCopy) {
-            if (pfd.revents & POLLIN) {
-                reactorFunc func;
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    func = fdMap[pfd.fd];
-                }
-                if (func) func(pfd.fd);
+
+        for (const auto& pair : fd_map) {
+            int fd = pair.first;
+            if (FD_ISSET(fd, &temp_fds)) {
+                pair.second(fd); // Call the reactor function
             }
         }
     }
+}
+
+// Function implementations
+void* startReactor() {
+    Reactor* reactor = new Reactor();
+    return reactor->start();
+}
+
+int addFdToReactor(void* reactor, int fd, reactorFunc func) {
+    Reactor* r = static_cast<Reactor*>(reactor);
+    return r->addFd(fd, func);
+}
+
+int removeFdFromReactor(void* reactor, int fd) {
+    Reactor* r = static_cast<Reactor*>(reactor);
+    return r->removeFd(fd);
+}
+
+int stopReactor(void* reactor) {
+    Reactor* r = static_cast<Reactor*>(reactor);
+    return r->stop();
 }
