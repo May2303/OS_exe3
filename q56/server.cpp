@@ -1,23 +1,24 @@
+#include "reactor.hpp"
 #include <iostream>
 #include <vector>
 #include <list>
 #include <stack>
 #include <algorithm>
-#include <thread>
 #include <sstream>
 #include <cstring>
-#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <mutex>
-#include "reactor.hpp"
+#include <unistd.h>
+#include <thread>   // Include thread header
+#include <mutex>    // Include mutex header
 
-using namespace std;
-
-mutex graphMutex;
+// Global graph data
 int n = 0, m = 0;
-vector<pair<int, int>> edges;
+std::vector<std::pair<int, int>> edges;
+std::mutex edgesMutex;  // Mutex for protecting access to edges
 
-void dfs1(int v, const vector<list<int>>& adj, vector<bool>& visited, stack<int>& finishStack) {
+void dfs1(int v, const std::vector<std::list<int>>& adj, std::vector<bool>& visited, std::stack<int>& finishStack) {
     visited[v] = true;
     for (int u : adj[v]) {
         if (!visited[u]) {
@@ -27,7 +28,7 @@ void dfs1(int v, const vector<list<int>>& adj, vector<bool>& visited, stack<int>
     finishStack.push(v);
 }
 
-void dfs2(int v, const vector<list<int>>& revAdj, vector<bool>& visited, vector<int>& component) {
+void dfs2(int v, const std::vector<std::list<int>>& revAdj, std::vector<bool>& visited, std::vector<int>& component) {
     visited[v] = true;
     component.push_back(v);
     for (int u : revAdj[v]) {
@@ -37,31 +38,31 @@ void dfs2(int v, const vector<list<int>>& revAdj, vector<bool>& visited, vector<
     }
 }
 
-vector<vector<int>> kosaraju(int n, const vector<pair<int, int>>& edges) {
-    vector<list<int>> adj(n + 1), revAdj(n + 1);
+std::vector<std::vector<int>> kosaraju(int n, const std::vector<std::pair<int, int>>& edges) {
+    std::vector<std::list<int>> adj(n + 1), revAdj(n + 1);
     for (const auto& edge : edges) {
         adj[edge.first].push_back(edge.second);
         revAdj[edge.second].push_back(edge.first);
     }
 
-    stack<int> finishStack;
-    vector<bool> visited(n + 1, false);
-
+    std::stack<int> finishStack;
+    std::vector<bool> visited(n + 1, false);
+    
     for (int i = 1; i <= n; ++i) {
         if (!visited[i]) {
             dfs1(i, adj, visited, finishStack);
         }
     }
 
-    fill(visited.begin(), visited.end(), false);
-    vector<vector<int>> sccs;
+    std::fill(visited.begin(), visited.end(), false);
+    std::vector<std::vector<int>> sccs;
 
     while (!finishStack.empty()) {
         int v = finishStack.top();
         finishStack.pop();
 
         if (!visited[v]) {
-            vector<int> component;
+            std::vector<int> component;
             dfs2(v, revAdj, visited, component);
             sccs.push_back(component);
         }
@@ -70,42 +71,48 @@ vector<vector<int>> kosaraju(int n, const vector<pair<int, int>>& edges) {
     return sccs;
 }
 
-void handleClient(int fd) {
+void handleClient(int clientSocket) {
     char buffer[1024] = {0};
-    string command;
+    std::string command;
 
     while (true) {
-        int valread = read(fd, buffer, 1024);
+        int valread = read(clientSocket, buffer, 1024);
         if (valread <= 0) {
-            cout << "Client disconnected" << endl;
-            close(fd);
+            std::cout << "Client disconnected" << std::endl;
+            close(clientSocket);
             return;
         }
 
+        // Process command
         buffer[valread] = '\0';
         command = buffer;
-        stringstream ss(command);
+        std::stringstream ss(command);
         ss >> command;
 
-
         if (command == "Newgraph") {
-            lock_guard<mutex> lock(graphMutex);
             ss >> n >> m;
+            edgesMutex.lock();  // Lock mutex before accessing shared data
             edges.clear();
-            edges.resize(m);
-
+            
+            // Read edges directly from command input
             for (int i = 0; i < m; ++i) {
                 int u, v;
-                ss >> u >> v;
-                edges[i] = {u, v};
+                if (!(ss >> u >> v)) {
+                    std::cerr << "Error reading edge " << i << std::endl;
+                    break;  // Exit loop on error
+                }
+                edges.push_back({u, v});
             }
-            string response = "Graph updated\n";
-            send(fd, response.c_str(), response.length(), 0);
-        } else if (command == "Kosaraju") {
-            lock_guard<mutex> lock(graphMutex);
-            vector<vector<int>> sccs = kosaraju(n, edges);
+            edgesMutex.unlock();  // Unlock mutex after accessing shared data
+            std::string response = "Graph updated\n";
+            send(clientSocket, response.c_str(), response.length(), 0);
 
-            stringstream response;
+        } else if (command == "Kosaraju") {
+            edgesMutex.lock();  // Lock mutex before accessing shared data
+            std::vector<std::vector<int>> sccs = kosaraju(n, edges);
+            edgesMutex.unlock();  // Unlock mutex after accessing shared data
+
+            std::stringstream response;
             response << "scc:\n";
             for (const auto& scc : sccs) {
                 for (int v : scc) {
@@ -113,46 +120,72 @@ void handleClient(int fd) {
                 }
                 response << "\n";
             }
-            send(fd, response.str().c_str(), response.str().length(), 0);
+            send(clientSocket, response.str().c_str(), response.str().length(), 0);
+
         } else if (command == "Newedge") {
-            lock_guard<mutex> lock(graphMutex);
             int u, v;
             ss >> u >> v;
+            edgesMutex.lock();  // Lock mutex before accessing shared data
             edges.emplace_back(u, v);
-            string response = "Edge added\n";
-            send(fd, response.c_str(), response.length(), 0);
+            edgesMutex.unlock();  // Unlock mutex after accessing shared data
+            std::string response = "Edge added\n";
+            send(clientSocket, response.c_str(), response.length(), 0);
+
         } else if (command == "Removeedge") {
-            lock_guard<mutex> lock(graphMutex);
             int u, v;
             ss >> u >> v;
-            auto it = find(edges.begin(), edges.end(), make_pair(u, v));
+            edgesMutex.lock();  // Lock mutex before accessing shared data
+            auto it = std::find(edges.begin(), edges.end(), std::make_pair(u, v));
             if (it != edges.end()) {
                 edges.erase(it);
-                string response = "Edge removed\n";
-                send(fd, response.c_str(), response.length(), 0);
-            } else {
-                string response = "Edge not found\n";
-                send(fd, response.c_str(), response.length(), 0);
+                std::cout << "Edge " << u << " -> " << v << " removed" << std::endl; // Print statement after removing an edge
             }
+            edgesMutex.unlock();  // Unlock mutex after accessing shared data
+            std::string response = "Edge removed\n";
+            send(clientSocket, response.c_str(), response.length(), 0);
+
         } else {
-            string error = "Invalid command\n";
-            send(fd, error.c_str(), error.length(), 0);
+            // Invalid command
+            std::string error = "Invalid command\n";
+            send(clientSocket, error.c_str(), error.length(), 0);
         }
     }
 }
 
+void acceptConnection(int serverSocket) {
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+    int newSocket;
+    
+    if ((newSocket = accept(serverSocket, (struct sockaddr *)&address, (socklen_t*)&addrlen))<0) {
+        perror("accept");
+        return;
+    }
+
+    // Print client connection information
+    char clientAddr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(address.sin_addr), clientAddr, INET_ADDRSTRLEN);
+    std::cout << "New connection from " << clientAddr << ":" << ntohs(address.sin_port) << std::endl;
+
+    // Handle client in a new thread
+    std::thread clientThread(handleClient, newSocket);
+    clientThread.detach();
+}
+
 int main() {
-    int server_fd, new_socket;
+    int serverSocket;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
 
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    // Creating socket file descriptor
+    if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+    // Forcefully attaching socket to the port 9034
+    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
         perror("setsockopt");
         exit(EXIT_FAILURE);
     }
@@ -160,29 +193,24 @@ int main() {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(9034);
 
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+    // Forcefully attaching socket to the port 9034
+    if (bind(serverSocket, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind failed");
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, 3) < 0) {
+    if (listen(serverSocket, 3) < 0) {
         perror("listen");
         exit(EXIT_FAILURE);
     }
 
-    Reactor* reactor = Reactor::startReactor();
+    void* reactor = startReactor();
+    addFdToReactor(reactor, serverSocket, acceptConnection);
+    
+    Reactor* r = static_cast<Reactor*>(reactor);
+    r->run();
 
-    while (true) {
-        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-            perror("accept");
-            exit(EXIT_FAILURE);
-        }
-
-        reactor->addFdToReactor(new_socket, handleClient);
-    }
-
-    reactor->stopReactor();
-    delete reactor;
+    stopReactor(reactor);
 
     return 0;
 }
