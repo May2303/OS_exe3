@@ -1,4 +1,3 @@
-#include "reactor.hpp"
 #include <iostream>
 #include <vector>
 #include <list>
@@ -6,231 +5,233 @@
 #include <algorithm>
 #include <sstream>
 #include <cstring>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <unistd.h>
-#include <thread>
+#include <arpa/inet.h>
 #include <mutex>
+#include <pthread.h>
 
-// Global graph data
-int n = 0, m = 0;
-std::vector<std::pair<int, int>> edges;
-std::mutex edgesMutex;  // Mutex for protecting access to edges
 
-void dfs1(int v, const std::vector<std::list<int>>& adj, std::vector<bool>& visited, std::stack<int>& finishStack) {
+using namespace std;
+
+// Global variables for graph data
+mutex graphMutex;               // Mutex for thread-safe access to graph data
+int n = 0, m = 0;               // Number of vertices and edges
+vector<pair<int, int>> edges;   // Vector to store graph edges
+
+// Depth-first search function to fill finishing order in finishStack
+void dfs1(int v, const vector<list<int>>& adj, vector<bool>& visited, stack<int>& finishStack) {
     visited[v] = true;
     for (int u : adj[v]) {
         if (!visited[u]) {
-            dfs1(u, adj, visited, finishStack);
+            dfs1(u, adj, visited, finishStack); // Recursive call for unvisited neighbors
         }
     }
-    finishStack.push(v);
+    finishStack.push(v); // Push vertex to stack after all neighbors are visited
 }
 
-void dfs2(int v, const std::vector<std::list<int>>& revAdj, std::vector<bool>& visited, std::vector<int>& component) {
+// Depth-first search function to find strongly connected components (SCCs)
+void dfs2(int v, const vector<list<int>>& revAdj, vector<bool>& visited, vector<int>& component) {
     visited[v] = true;
-    component.push_back(v);
+    component.push_back(v); // Add vertex to current SCC
     for (int u : revAdj[v]) {
         if (!visited[u]) {
-            dfs2(u, revAdj, visited, component);
+            dfs2(u, revAdj, visited, component); // Recursive call for unvisited neighbors
         }
     }
 }
 
-std::vector<std::vector<int>> kosaraju(int n, const std::vector<std::pair<int, int>>& edges) {
-    std::vector<std::list<int>> adj(n + 1), revAdj(n + 1);
+// Kosaraju's algorithm to find all SCCs in the graph
+vector<vector<int>> kosaraju(int n, const vector<pair<int, int>>& edges) {
+    vector<list<int>> adj(n + 1), revAdj(n + 1); // Adjacency list and reverse adjacency list
+
+    // Construct adjacency list and reverse adjacency list from edges
     for (const auto& edge : edges) {
-        adj[edge.first].push_back(edge.second);
-        revAdj[edge.second].push_back(edge.first);
+        adj[edge.first].push_back(edge.second);   // Original graph
+        revAdj[edge.second].push_back(edge.first); // Transposed graph
     }
 
-    std::stack<int> finishStack;
-    std::vector<bool> visited(n + 1, false);
-    
+    stack<int> finishStack;         // Stack to store finishing order of vertices
+    vector<bool> visited(n + 1, false); // Visited array to track visited vertices
+
+    // Perform first DFS to fill finishStack with vertices in finishing order
     for (int i = 1; i <= n; ++i) {
         if (!visited[i]) {
             dfs1(i, adj, visited, finishStack);
         }
     }
 
-    std::fill(visited.begin(), visited.end(), false);
-    std::vector<std::vector<int>> sccs;
+    fill(visited.begin(), visited.end(), false); // Reset visited array
+    vector<vector<int>> sccs; // Vector of vectors to store SCCs
 
+    // Process vertices in order of decreasing finish times (top of finishStack)
     while (!finishStack.empty()) {
         int v = finishStack.top();
         finishStack.pop();
 
         if (!visited[v]) {
-            std::vector<int> component;
-            dfs2(v, revAdj, visited, component);
-            sccs.push_back(component);
+            vector<int> component; // Vector to store current SCC
+            dfs2(v, revAdj, visited, component); // Perform DFS on transposed graph
+            sccs.push_back(component); // Add current SCC to list of SCCs
         }
     }
 
-    return sccs;
+    // Check if at least 50% of vertices are in the same SCC
+    int maxComponentSize = 0;
+    for (const auto& scc : sccs) {
+        if (scc.size() > maxComponentSize) {
+            maxComponentSize = scc.size();
+        }
+    }
+    bool atLeastHalfInSameSCC = (maxComponentSize >= n / 2);
+
+    // Print appropriate message if the condition changes
+    static bool prevAtLeastHalfInSameSCC = false;
+    if (prevAtLeastHalfInSameSCC && !atLeastHalfInSameSCC) {
+        cout << "At least 50% of the graph no longer belongs to the same SCC" << endl;
+    } else if (!prevAtLeastHalfInSameSCC && atLeastHalfInSameSCC) {
+        cout << "At least 50% of the graph belongs to the same SCC" << endl;
+    }
+
+    // Update the previous state
+    prevAtLeastHalfInSameSCC = atLeastHalfInSameSCC;
+
+    return sccs; // Return all SCCs found in the graph
 }
 
-void handleClient(int clientSocket) {
-    char buffer[1024] = {0};
-    std::string command;
+// Function executed by each client thread
+void* clientThread(void* arg) {
+    int sockfd = *((int*)arg); // Extract socket file descriptor from argument
+    char buffer[1024] = {0};   // Buffer to store incoming data
+    string command;            // String to store parsed command
 
     while (true) {
-        int valread = read(clientSocket, buffer, 1024);
+        int valread = read(sockfd, buffer, 1024); // Read data from client
         if (valread <= 0) {
-            std::cout << "Client disconnected" << std::endl;
-            close(clientSocket);
-            return;
+            cout << "Client disconnected" << endl; // Print message on client disconnect
+            close(sockfd); // Close socket
+            return nullptr; // Exit thread
         }
 
-        // Process command
-        buffer[valread] = '\0';
-        command = buffer;
-        std::stringstream ss(command);
-        ss >> command;
+        buffer[valread] = '\0'; // Null-terminate buffer
+        command = buffer; // Convert buffer to string
+        stringstream ss(command); // String stream for parsing
 
+        ss >> command; // Extract first token as command
+
+        // Process commands received from client
         if (command == "Newgraph") {
-            ss >> n >> m;
-            edgesMutex.lock();  // Lock mutex before accessing shared data
-            edges.clear();
-            
-            // Read edges directly from command input
-            for (int i = 0; i < m; ++i) {
-                int u, v;
-                if (!(ss >> u >> v)) {
-                    std::cerr << "Error reading edge " << i << std::endl;
-                    break;  // Exit loop on error
+            {
+                lock_guard<mutex> lock(graphMutex); // Lock mutex for thread-safe access
+                ss >> n >> m; // Read new number of vertices and edges
+                edges.clear(); // Clear current edges vector
+                edges.resize(m); // Resize edges vector
+
+                // Read and populate edges vector
+                for (int i = 0; i < m; ++i) {
+                    int u, v;
+                    ss >> u >> v;
+                    edges[i] = {u, v}; // Store edge (u, v)
                 }
-                edges.push_back({u, v});
             }
-            edgesMutex.unlock();  // Unlock mutex after accessing shared data
-            std::string response = "Graph updated\n";
-            send(clientSocket, response.c_str(), response.length(), 0);
 
+            string response = "Graph updated\n"; // Prepare response
+            send(sockfd, response.c_str(), response.length(), 0); // Send response to client
         } else if (command == "Kosaraju") {
-            edgesMutex.lock();  // Lock mutex before accessing shared data
-            std::vector<std::vector<int>> sccs = kosaraju(n, edges);
-            edgesMutex.unlock();  // Unlock mutex after accessing shared data
+            vector<vector<int>> sccs; // Vector to store SCCs
 
-            std::stringstream response;
+            // Compute SCCs using Kosaraju's algorithm
+            {
+                lock_guard<mutex> lock(graphMutex); // Lock mutex for thread-safe access
+                sccs = kosaraju(n, edges); // Compute SCCs for current graph state
+            }
+
+            // Prepare and send response with SCCs to client
+            stringstream response;
             response << "scc:\n";
             for (const auto& scc : sccs) {
                 for (int v : scc) {
-                    response << v << " ";
+                    response << v << " "; // Append vertex to response
                 }
-                response << "\n";
+                response << "\n"; // Newline after each SCC
             }
-            send(clientSocket, response.str().c_str(), response.str().length(), 0);
-
-            // Start a thread to monitor SCC conditions
-            std::thread checkSCCThread([&sccs]() {
-                int total_vertices = n; // Total number of vertices in the graph
-                while (true) {
-                    int largest_component_size = 0; // Size of the largest SCC found
-                    for (const auto& component : sccs) {
-                        if (component.size() > largest_component_size) {
-                            largest_component_size = component.size();
-                        }
-                    }
-                    if (largest_component_size >= total_vertices / 2) {
-                        std::cout << "At least 50% of the graph belongs to the same SCC" << std::endl;
-                    } else {
-                        std::cout << "At least 50% of the graph no longer belongs to the same SCC" << std::endl;
-                    }
-                    std::this_thread::sleep_for(std::chrono::seconds(5)); // Check every 5 seconds
-                }
-            });
-
-            checkSCCThread.detach(); // Detach thread to run independently
+            send(sockfd, response.str().c_str(), response.str().length(), 0); // Send response
         } else if (command == "Newedge") {
-            int u, v;
-            ss >> u >> v;
-            edgesMutex.lock();  // Lock mutex before accessing shared data
-            edges.emplace_back(u, v);
-            edgesMutex.unlock();  // Unlock mutex after accessing shared data
-            std::string response = "Edge added\n";
-            send(clientSocket, response.c_str(), response.length(), 0);
-
-        } else if (command == "Removeedge") {
-            int u, v;
-            ss >> u >> v;
-            edgesMutex.lock();  // Lock mutex before accessing shared data
-            auto it = std::find(edges.begin(), edges.end(), std::make_pair(u, v));
-            if (it != edges.end()) {
-                edges.erase(it);
-                std::cout << "Edge " << u << " -> " << v << " removed" << std::endl; // Print statement after removing an edge
+            {
+                lock_guard<mutex> lock(graphMutex); // Lock mutex for thread-safe access
+                int u, v;
+                ss >> u >> v;
+                edges.emplace_back(u, v); // Add new edge to edges vector
             }
-            edgesMutex.unlock();  // Unlock mutex after accessing shared data
-            std::string response = "Edge removed\n";
-            send(clientSocket, response.c_str(), response.length(), 0);
 
+            string response = "Edge added\n"; // Prepare response
+            send(sockfd, response.c_str(), response.length(), 0); // Send response to client
+        } else if (command == "Removeedge") {
+            {
+                lock_guard<mutex> lock(graphMutex); // Lock mutex for thread-safe access
+                int u, v;
+                ss >> u >> v;
+                auto it = find(edges.begin(), edges.end(), make_pair(u, v)); // Find edge in edges vector
+                if (it != edges.end()) {
+                    edges.erase(it); // Erase edge if found
+                    string response = "Edge removed\n"; // Prepare response
+                    send(sockfd, response.c_str(), response.length(), 0); // Send response to client
+                } else {
+                    string response = "Edge not found\n"; // Prepare response
+                    send(sockfd, response.c_str(), response.length(), 0); // Send response to client
+                }
+            }
         } else {
-            // Invalid command
-            std::string error = "Invalid command\n";
-            send(clientSocket, error.c_str(), error.length(), 0);
+            string error = "Invalid command\n"; // Prepare error response
+            send(sockfd, error.c_str(), error.length(), 0); // Send error response to client
         }
     }
 }
 
-void acceptConnection(int serverSocket) {
-    struct sockaddr_in address;
-    int addrlen = sizeof(address);
-    int newSocket;
-    
-    if ((newSocket = accept(serverSocket, (struct sockaddr *)&address, (socklen_t*)&addrlen))<0) {
-        perror("accept");
-        return;
-    }
-
-    // Print client connection information
-    char clientAddr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &(address.sin_addr), clientAddr, INET_ADDRSTRLEN);
-    std::cout << "New connection from " << clientAddr << ":" << ntohs(address.sin_port) << std::endl;
-
-    // Handle client in a new thread
-    std::thread clientThread(handleClient, newSocket);
-    clientThread.detach();
-}
-
+// Main function to run the server
 int main() {
-    int serverSocket;
-    struct sockaddr_in address;
-    int opt = 1;
-    int addrlen = sizeof(address);
+    int server_fd, new_socket; // Server socket and new client socket
+    struct sockaddr_in address; // Address structure for server
+    int opt = 1; // Socket option
+    int addrlen = sizeof(address); // Length of address structure
 
     // Creating socket file descriptor
-    if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("socket failed");
-        exit(EXIT_FAILURE);
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed"); // Print error message if socket creation fails
+        exit(EXIT_FAILURE); // Exit program
     }
 
-    // Forcefully attaching socket to the port 9034
-    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("setsockopt");
-        exit(EXIT_FAILURE);
-    }
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(9034);
-
-    // Forcefully attaching socket to the port 9034
-    if (bind(serverSocket, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("bind failed");
-        exit(EXIT_FAILURE);
+    // Set socket options to reuse address and port
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt"); // Print error message if setsockopt fails
+        exit(EXIT_FAILURE); // Exit program
     }
 
-    if (listen(serverSocket, 3) < 0) {
-        perror("listen");
-        exit(EXIT_FAILURE);
+    address.sin_family = AF_INET; // Address family is IPv4
+    address.sin_addr.s_addr = INADDR_ANY; // Accept connections from any IP address
+    address.sin_port = htons(9034); // Port number in network byte order
+
+    // Bind socket to address and port
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("bind failed"); // Print error message if bind fails
+        exit(EXIT_FAILURE); // Exit program
     }
 
-    void* reactor = startReactor();
-    addFdToReactor(reactor, serverSocket, acceptConnection);
-    
-    Reactor* r = static_cast<Reactor*>(reactor);
-    r->run();
+    // Listen for incoming connections, maximum 3 pending connections
+    if (listen(server_fd, 3) < 0) {
+        perror("listen"); // Print error message if listen fails
+        exit(EXIT_FAILURE); // Exit program
+    }
 
-    stopReactor(reactor);
+    // Accept incoming connections and create a new thread for each client
+    while (true) {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("accept"); // Print error message if accept fails
+            exit(EXIT_FAILURE); // Exit program
+        }
 
-    return 0;
+        pthread_t tid; // Thread ID
+        pthread_create(&tid, NULL, clientThread, (void*)&new_socket); // Create new thread for client
+    }
+
+    return 0; 
 }
