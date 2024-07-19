@@ -1,46 +1,33 @@
 #ifndef REACTOR_HPP
 #define REACTOR_HPP
 
+#include <functional>
 #include <map>
-#include <sys/select.h>
+#include <vector>
 #include <mutex>
+#include <atomic>
+#include <poll.h>
+#include <pthread.h>
 
-// typedef for the reactor function
-typedef void (*reactorFunc)(int fd);
+typedef std::function<void(int)> reactorFunc;
+typedef void* (*proactorFunc)(int sockfd);
 
-// Reactor class definition
 class Reactor {
 public:
-    // Constructor
-    Reactor();
-
-    // Starts the reactor
-    void* start();
-
-    // Adds fd to the reactor
-    int addFd(int fd, reactorFunc func);
-
-    // Removes fd from the reactor
-    int removeFd(int fd);
-
-    // Stops the reactor
-    int stop();
-
-    // Runs the reactor
-    void run();
+    static Reactor* startReactor();
+    int addFdToReactor(int fd, reactorFunc func);
+    int removeFdFromReactor(int fd);
+    int stopReactor();
+    pthread_t startProactor(int sockfd, proactorFunc threadFunc);
+    int stopProactor(pthread_t tid);
+    void reactorLoop();
 
 private:
-    fd_set read_fds;
-    int max_fd;
-    bool running;
-    std::map<int, reactorFunc> fd_map;
-    std::mutex mtx; // mutex for thread safety
+    Reactor();
+    std::map<int, reactorFunc> fdMap;
+    std::vector<struct pollfd> pollfds;
+    std::mutex mtx;
+    std::atomic<bool> running;
 };
-
-// Function prototypes
-void* startReactor();
-int addFdToReactor(void* reactor, int fd, reactorFunc func);
-int removeFdFromReactor(void* reactor, int fd);
-int stopReactor(void* reactor);
 
 #endif // REACTOR_HPP
